@@ -1,0 +1,64 @@
+# Inline tools registry — ONLY tools listed and enabled here are dispatchable via inline query.
+# type: direct  → executor called without LLM
+# type: llm     → routes through Manifest (disabled tools below show the future interface)
+version: 1
+
+tools:
+  - id: media_download
+    type: direct
+    executor: inline_media
+    match:
+      - pattern: "https?://(open\\.spotify\\.com|music\\.apple\\.com|youtube\\.com|youtu\\.be|soundcloud\\.com)"
+        type: url
+        priority: 0
+    timeout_sec: 25
+    cache:
+      backend: memory
+      ttl_sec: 3600
+    # Resolved from env at runtime; falls back to user DM if unset.
+    staging_chat_env: TELEGRAM_HOME_CHANNEL
+    enabled: true
+
+  - id: repost
+    type: direct
+    executor: inline_repost
+    match:
+      - pattern: "^#"
+        type: prefix
+        priority: 0
+    timeout_sec: 10
+    cache:
+      backend: memory
+      ttl_sec: 3600
+    enabled: true
+
+  # Future LLM tools — disabled until explicitly enabled and model tier verified.
+
+  - id: web_search
+    type: llm
+    executor: inline_llm
+    model_tier: simple
+    match:
+      - pattern: "^\\?"
+        type: prefix
+        priority: 0
+    timeout_sec: 20
+    cache:
+      backend: none
+    inline_only: false
+    enabled: false
+
+  - id: weather
+    type: llm
+    executor: inline_llm
+    model_tier: simple
+    match:
+      - pattern: "^weather\\s+"
+        type: prefix
+        priority: 0
+    timeout_sec: 15
+    cache:
+      backend: memory
+      ttl_sec: 600
+    inline_only: false
+    enabled: false
