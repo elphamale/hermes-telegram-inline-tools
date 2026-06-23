@@ -10,15 +10,14 @@ contain at least one assistant message are searched. This keeps results
 current and avoids surfacing months-old context.
 
 Authorization (defense-in-depth):
-    The framework's inline query handler has no user-allowlist gate.
-    This executor enforces ``TELEGRAM_ALLOWED_USERS`` independently —
-    if the env var is set and the querying user is not in it, the executor
-    raises ``PermissionError`` and the user sees a "failed" cache entry.
+    The adapter does NOT enforce TELEGRAM_ALLOWED_USERS on inline queries.
+    This executor enforces it independently — if the env var is set and the
+    querying user is not in it, execute() raises PermissionError.
 
 Usage:
     Type ``@inlinebot #<search>`` in any Telegram chat.
     The ``#`` prefix routes to this executor via inline_tools.yaml.
-    First query → "Searching..." placeholder.
+    First query → "⏳ Searching..." placeholder (get_stub).
     Second query → inline article result with the matched message text.
     Tap to send the message content to the current chat.
 """
@@ -32,6 +31,14 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from gateway.platforms.telegram_inline_router import InlineExecutor
+
+try:
+    from telegram import InlineQueryResultArticle, InputTextMessageContent
+    InlineQueryResult = Any
+except ImportError:
+    InlineQueryResultArticle = Any  # type: ignore[misc,assignment]
+    InputTextMessageContent = Any  # type: ignore[misc,assignment]
+    InlineQueryResult = Any
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +135,6 @@ def _search_messages(
 class InlineRepostExecutor(InlineExecutor):
     """Search Aineko's outbound messages and return the best match for repost."""
 
-    # How many recent sessions to search (overridable via tool config)
     DEFAULT_SESSION_WINDOW = 5
 
     def __init__(self, tool_config: Dict[str, Any], bot: Any) -> None:
@@ -138,7 +144,20 @@ class InlineRepostExecutor(InlineExecutor):
             tool_config.get("session_window", self.DEFAULT_SESSION_WINDOW)
         )
 
-    async def execute(self, user_id: int, query: str) -> Dict[str, Any]:
+    @staticmethod
+    def get_stub(query: str) -> Any:
+        """Instant placeholder shown on first query while results are fetched."""
+        return InlineQueryResultArticle(
+            id="stub",
+            title="⏳ Searching...",
+            description="Retype to see results",
+            input_message_content=InputTextMessageContent(
+                message_text=query[:256],
+            ),
+        )
+
+    async def execute(self, user_id: int, query: str) -> List[Any]:
+        # Defense-in-depth: adapter does not check TELEGRAM_ALLOWED_USERS.
         allowed = _get_allowed_users()
         if allowed and user_id not in allowed:
             logger.warning("[inline_repost] denied user %d", user_id)
@@ -170,7 +189,6 @@ class InlineRepostExecutor(InlineExecutor):
         if len(content) > 4096:
             content = content[:4090] + "\n[…]"
 
-        # First non-empty, non-table, non-code line as title
         title = ""
         for line in content.split("\n"):
             s = line.strip()
@@ -185,13 +203,16 @@ class InlineRepostExecutor(InlineExecutor):
             user_id, msg["id"], msg["session_id"][:16], query[:60],
         )
 
-        return {
-            "media_type": "text",
-            "text": content,
-            "title": title,
-            "description": f"Repost · msg #{msg['id']}",
-            "message_id": msg["id"],
-        }
+        return [
+            InlineQueryResultArticle(
+                id=f"repost_{msg['id']}",
+                title=title,
+                description=f"Repost · msg #{msg['id']}",
+                input_message_content=InputTextMessageContent(
+                    message_text=content,
+                ),
+            )
+        ]
 
 
 def register(router) -> None:

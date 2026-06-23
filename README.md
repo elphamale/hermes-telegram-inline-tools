@@ -10,7 +10,7 @@ The inline query pipeline has three layers:
 
 1. **`TelegramInlineRouter`** (`gateway/platforms/telegram_inline_router.py` in hermes-agent) — loads `~/.hermes/inline_tools.yaml`, matches the query to a tool, and dispatches to an executor.
 2. **Executor** — a Python class that subclasses `InlineExecutor`, placed in `~/.hermes/inline_executors/*.py`. Loaded automatically on gateway start.
-3. **Two-phase UX** — first query returns a "Searching..." placeholder instantly (Telegram's 30 s hard timeout makes this necessary); second query returns the ready result from cache.
+3. **Executors own their full result lifecycle.** Return `List[InlineQueryResult]` — ready-to-send Telegram objects. For slow operations, return a stub immediately.
 
 ## Installation
 
@@ -36,9 +36,13 @@ Search the agent's outbound message history and send a past response into any ch
   session_window: 3   # search last 3 sessions instead of 5
 ```
 
-**Auth:** enforces `TELEGRAM_ALLOWED_USERS` independently (the framework's inline handler has no allowlist gate).
+**Auth:** enforces `TELEGRAM_ALLOWED_USERS` independently (the adapter-level inline handler has no allowlist gate — see Security note).
 
 **Requires:** hermes-agent with the pluggable inline executor API (PR [#50884](https://github.com/NousResearch/hermes-agent/pull/50884) or later).
+
+## Classifier
+
+Query routing uses a two-stage model implemented in `inline_classifier.py`. On each inline query the classifier first checks whether any enabled tool declares a `prefix:` field that matches the query start — if so, only those tools are dispatched (O(1), no model inference). For queries that don't match any prefix, the classifier encodes the query with [fastembed](https://github.com/qdrant/fastembed) (`BAAI/bge-small-en-v1.5`) and computes cosine similarity against each tool's `description:` embedding, dispatching only tools above a configurable threshold. Both stages merge results in FILO order (last-registered tool wins on tie). Tool embeddings are built once at plugin init and rebuilt whenever `inline_tools.yaml` mtime changes.
 
 ## Writing a new executor
 
@@ -46,18 +50,21 @@ Copy `executor_template.py`, implement `execute()`, and add a `register()` funct
 
 ```python
 from gateway.platforms.telegram_inline_router import InlineExecutor
+from telegram import InlineQueryResultArticle, InputTextMessageContent
 
 class MyExecutor(InlineExecutor):
     def __init__(self, tool_config, bot):
         self._config = tool_config
 
     async def execute(self, user_id, query):
-        return {
-            "media_type": "text",
-            "text": "your result here",
-            "title": "Result title",
-            "description": "Short description",
-        }
+        return [
+            InlineQueryResultArticle(
+                id="result",
+                title="Result title",
+                description="Short description",
+                input_message_content=InputTextMessageContent(message_text="your result here"),
+            )
+        ]
 
 def register(router):
     router.register_executor("my_executor", lambda cfg, bot: MyExecutor(cfg, bot))
@@ -69,6 +76,8 @@ Add an entry to `inline_tools.yaml`:
 - id: my_tool
   type: direct
   executor: my_executor
+  description: "What this tool does, used by the classifier"
+  prefix: "!"
   match:
     - pattern: "^!"
       type: prefix
@@ -89,11 +98,15 @@ Lower `priority` wins when multiple tools could match.
 
 ### Result types
 
-| `media_type` | Required keys                    | Telegram type              |
-|--------------|----------------------------------|----------------------------|
-| `"text"`     | `text`, `title`, `description`   | `InlineQueryResultArticle` |
-| `"audio"` (default) | `file_id`, `title`, `performer` | `InlineQueryResultCachedAudio` |
+Executors return `List[InlineQueryResult]` — Telegram objects passed directly to `iq.answer()`.
+
+| Telegram type                  | Common constructor args                                        |
+|-------------------------------|----------------------------------------------------------------|
+| `InlineQueryResultArticle`    | `id`, `title`, `description`, `input_message_content`         |
+| `InlineQueryResultCachedAudio`| `id`, `audio_file_id`, `caption`                              |
 
 ## Security note
 
-The inline query handler has no user/chat allowlist — anyone who discovers the bot's username can query it. Executors that return private data must enforce `TELEGRAM_ALLOWED_USERS` themselves (see `inline_repost.py` for the pattern).
+Auth is enforced at the adapter level. Executors accessing sensitive data may add a second check as defense-in-depth.
+
+The inline handler has a ~10 s empirical deadline; the adapter enforces 6.5 s via `INLINE_RESPONSE_DEADLINE`. Executors that need longer should return a stub result immediately and manage their own background state.

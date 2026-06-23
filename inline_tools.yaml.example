@@ -1,12 +1,30 @@
 # Inline tools registry — ONLY tools listed and enabled here are dispatchable via inline query.
 # type: direct  → executor called without LLM
 # type: llm     → routes through Manifest (disabled tools below show the future interface)
+#
+# New fields (v2):
+#   description:  Plain English summary used by the classifier for embedding-based routing.
+#   handles:      List of bot usernames this tool responds to (omit to match all bots).
+#   prefix:       Shorthand for a single prefix match rule — equivalent to:
+#                   match: [{pattern: "^<prefix>", type: prefix, priority: 0}]
+#                 Use this for tools triggered by a leading character/word.
+#                 Keep the full match: block for URL and catch-all types.
+#
+# Routing precedence (lowest priority number wins):
+#   prefix tools and URL tools both default to priority 0.
+#   Stable sort preserves YAML order for equal-priority tools.
+#
+# #закон routing note: the ^# pattern correctly matches Cyrillic queries like #закон.
+# Past failures were at the executor level (FTS5 trigram tokenizer returning no rows
+# for short Cyrillic terms), not in the routing layer. The match block is correct as-is.
 version: 1
 
 tools:
   - id: media_download
     type: direct
     executor: inline_media
+    description: "Download audio from Spotify, YouTube, SoundCloud, or Apple Music URLs"
+    # handles: [myinlinebot]   # omit to respond on all bots
     match:
       - pattern: "https?://(open\\.spotify\\.com|music\\.apple\\.com|youtube\\.com|youtu\\.be|soundcloud\\.com)"
         type: url
@@ -22,6 +40,9 @@ tools:
   - id: repost
     type: direct
     executor: inline_repost
+    description: "Search past Aineko messages by keyword and send the result to the current chat"
+    # handles: [myinlinebot]   # omit to respond on all bots
+    prefix: "#"
     match:
       - pattern: "^#"
         type: prefix
@@ -37,6 +58,9 @@ tools:
   - id: web_search
     type: llm
     executor: inline_llm
+    description: "Search the web and summarise the answer"
+    # handles: [myinlinebot]
+    prefix: "?"
     model_tier: simple
     match:
       - pattern: "^\\?"
@@ -51,6 +75,9 @@ tools:
   - id: weather
     type: llm
     executor: inline_llm
+    description: "Get current weather for a city or location"
+    # handles: [myinlinebot]
+    prefix: "weather "
     model_tier: simple
     match:
       - pattern: "^weather\\s+"
