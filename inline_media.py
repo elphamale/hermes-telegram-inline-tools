@@ -1,13 +1,16 @@
-"""Inline executor: download audio from Spotify/YouTube/SoundCloud/Apple Music URLs.
+"""Inline executor: download audio or video via yt-dlp.
 
-Registered as ``inline_media`` — matches the executor name in inline_tools.yaml.
-Downloads audio via the hermes-agent Docker container, stages it to a Telegram
-chat to obtain a file_id, then returns an InlineQueryResultCachedAudio.
+Registered as two executors — ``inline_media_audio`` and ``inline_media_video`` —
+both backed by the same class, parameterized by ``tool_config["media_type"]``.
+The classifier selects which executor to call based on the query.
 
-Two-phase UX (download takes 15–25 s, well over the 6.5 s adapter deadline):
-  First query → returns stub "Downloading..." article immediately, starts background dl.
-  Repeat same query → returns InlineQueryResultCachedAudio once ready, or stub again
-  if still in-flight, or an error article if the download failed.
+Two-phase UX (downloads take 15–45 s, well over the 6.5 s adapter deadline):
+  First query  → stub "Downloading..." returned immediately, background dl starts.
+  Repeat query → InlineQueryResultCachedAudio / InlineQueryResultCachedVideo once
+                 ready, or stub again if still in-flight, or error article on failure.
+
+Cache keys are scoped by media type so the same query can have independent
+audio and video entries.
 """
 
 from __future__ import annotations
@@ -26,46 +29,59 @@ try:
     from telegram import (
         InlineQueryResultArticle,
         InlineQueryResultCachedAudio,
+        InlineQueryResultCachedVideo,
         InputTextMessageContent,
     )
 except ImportError:
     InlineQueryResultArticle = Any  # type: ignore[misc,assignment]
     InlineQueryResultCachedAudio = Any  # type: ignore[misc,assignment]
+    InlineQueryResultCachedVideo = Any  # type: ignore[misc,assignment]
     InputTextMessageContent = Any  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
 
-# Module-level result cache — keyed by query.lower()
+_VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov")
+
+# Module-level result cache — keyed by "<media_type>:<query.lower()>"
 _cache: Dict[str, Dict[str, Any]] = {}
 
 
 class InlineMediaExecutor(InlineExecutor):
-    """Download audio and return an InlineQueryResultCachedAudio."""
+    """Download audio or video and return a cached Telegram inline result."""
 
     def __init__(self, tool_config: Dict[str, Any], bot: Any) -> None:
         self._config = tool_config
         self._bot = bot
+        self._media_type: str = tool_config.get("media_type", "audio")
         staging_env = tool_config.get("staging_chat_env", "TELEGRAM_HOME_CHANNEL")
         self._staging_chat: Optional[str] = os.environ.get(staging_env)
 
-    @staticmethod
-    def get_stub(query: str) -> Any:
+    def get_stub(self, query: str) -> Any:
+        label = "video" if self._media_type == "video" else "audio"
         return InlineQueryResultArticle(
-            id="downloading",
-            title="Downloading...",
-            description=f"Wait ~15 s then type again: {query[:60]}",
+            id=f"downloading_{self._media_type}",
+            title=f"Downloading {label}...",
+            description=f"Wait ~20 s then type again: {query[:60]}",
             input_message_content=InputTextMessageContent(
-                message_text=f"Downloading: {query[:80]}",
+                message_text=f"Downloading {label}: {query[:80]}",
             ),
         )
 
     async def execute(self, user_id: int, query: str) -> List[Any]:
-        key = query.lower()
+        key = f"{self._media_type}:{query.lower()}"
         entry = _cache.get(key)
 
         if entry:
             status = entry.get("status")
             if status == "ready":
+                if self._media_type == "video":
+                    return [
+                        InlineQueryResultCachedVideo(
+                            id=key[:64],
+                            video_file_id=entry["file_id"],
+                            title=entry.get("title", query[:60]),
+                        )
+                    ]
                 return [
                     InlineQueryResultCachedAudio(
                         id=key[:64],
@@ -80,7 +96,7 @@ class InlineMediaExecutor(InlineExecutor):
                 _cache.pop(key, None)  # evict so next query retries
                 return [
                     InlineQueryResultArticle(
-                        id="failed",
+                        id=f"failed_{self._media_type}",
                         title="Download failed — try again",
                         description=err,
                         input_message_content=InputTextMessageContent(
@@ -89,7 +105,6 @@ class InlineMediaExecutor(InlineExecutor):
                     )
                 ]
 
-        # Not cached — kick off background download and return stub immediately
         _cache[key] = {"status": "downloading"}
         asyncio.ensure_future(self._download_and_cache(query, key))
         return [self.get_stub(query)]
@@ -107,40 +122,64 @@ class InlineMediaExecutor(InlineExecutor):
             os.makedirs(host_out_dir, exist_ok=True)
 
             timeout = self._config.get("timeout_sec", 25)
-            await self._run_download(container, container_out_dir, search_query, timeout)
-
-            mp3s = [f for f in os.listdir(host_out_dir) if f.endswith(".mp3")]
-            if not mp3s:
-                raise RuntimeError("Downloader produced no output file")
-
-            file_path = os.path.join(host_out_dir, mp3s[0])
-            performer, title = self._split_stem(mp3s[0][:-4])
+            await self._run_download(
+                container, container_out_dir, search_query, timeout, self._media_type
+            )
 
             staging = self._staging_chat or ""
             if not staging:
-                logger.warning("[inline_media] no staging chat configured — cannot stage file_id for %r", key[:60])
+                logger.warning(
+                    "[inline_media] no staging chat configured for %r", key[:60]
+                )
                 _cache[key] = {"status": "failed", "error": "no staging chat configured"}
                 return
 
-            with open(file_path, "rb") as fh:
-                msg = await self._bot.send_audio(
-                    chat_id=staging,
-                    audio=fh,
-                    title=title,
-                    performer=performer,
-                    disable_notification=True,
-                )
+            if self._media_type == "video":
+                files = [
+                    f for f in os.listdir(host_out_dir)
+                    if f.lower().endswith(_VIDEO_EXTENSIONS)
+                ]
+                if not files:
+                    raise RuntimeError("Downloader produced no video file")
+                file_path = os.path.join(host_out_dir, files[0])
+                _, title = self._split_stem(files[0].rsplit(".", 1)[0])
+                with open(file_path, "rb") as fh:
+                    msg = await self._bot.send_video(
+                        chat_id=staging,
+                        video=fh,
+                        caption=title,
+                        disable_notification=True,
+                    )
+                _cache[key] = {
+                    "status": "ready",
+                    "file_id": msg.video.file_id,
+                    "title": title,
+                }
+            else:
+                mp3s = [f for f in os.listdir(host_out_dir) if f.endswith(".mp3")]
+                if not mp3s:
+                    raise RuntimeError("Downloader produced no audio file")
+                file_path = os.path.join(host_out_dir, mp3s[0])
+                performer, title = self._split_stem(mp3s[0][:-4])
+                with open(file_path, "rb") as fh:
+                    msg = await self._bot.send_audio(
+                        chat_id=staging,
+                        audio=fh,
+                        title=title,
+                        performer=performer,
+                        disable_notification=True,
+                    )
+                _cache[key] = {
+                    "status": "ready",
+                    "file_id": msg.audio.file_id,
+                    "title": title,
+                    "performer": performer,
+                }
 
-            _cache[key] = {
-                "status": "ready",
-                "file_id": msg.audio.file_id,
-                "title": title,
-                "performer": performer,
-            }
-            logger.info("[inline_media] cached file_id for %r", key[:60])
+            logger.info("[inline_media] cached %s file_id for %r", self._media_type, key[:60])
 
         except Exception as exc:
-            logger.warning("[inline_media] download failed for %r: %s", key[:60], exc)
+            logger.warning("[inline_media] %s download failed for %r: %s", self._media_type, key[:60], exc)
             _cache[key] = {"status": "failed", "error": str(exc)[:200]}
         finally:
             if host_out_dir:
@@ -185,12 +224,23 @@ class InlineMediaExecutor(InlineExecutor):
         return query
 
     @staticmethod
-    async def _run_download(container: str, out_dir: str, query: str, timeout_sec: int) -> None:
+    async def _run_download(
+        container: str, out_dir: str, query: str, timeout_sec: int, media_type: str
+    ) -> None:
+        if media_type == "video":
+            flags = (
+                '-f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" '
+                "--merge-output-format mp4 "
+            )
+        else:
+            flags = (
+                "--cookies /mnt/hermes_home/youtube_cookies.txt "
+                "-f bestaudio --extract-audio --audio-format mp3 --audio-quality 0 "
+            )
         bash = (
             f"mkdir -p {out_dir} && "
             f"python3 -m yt_dlp "
-            f"--cookies /mnt/hermes_home/youtube_cookies.txt "
-            f"-f bestaudio --extract-audio --audio-format mp3 --audio-quality 0 "
+            f"{flags}"
             f"--no-playlist "
             f"-o '{out_dir}/%(uploader)s - %(title)s.%(ext)s' "
             f'"ytsearch1:$YTDLP_QUERY"'
@@ -221,7 +271,11 @@ class InlineMediaExecutor(InlineExecutor):
 
 def register(router) -> None:
     router.register_executor(
-        "inline_media",
+        "inline_media_audio",
         lambda tool_config, bot: InlineMediaExecutor(tool_config, bot),
     )
-    logger.info("[inline_media] executor registered")
+    router.register_executor(
+        "inline_media_video",
+        lambda tool_config, bot: InlineMediaExecutor(tool_config, bot),
+    )
+    logger.info("[inline_media] audio + video executors registered")

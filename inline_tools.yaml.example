@@ -16,19 +16,32 @@
 version: 1
 
 tools:
-  - id: media_download
+  - id: media_audio
     type: direct
-    executor: inline_media
-    description: "Download audio from Spotify, YouTube, SoundCloud or Apple Music — paste a link or search by song name"
+    executor: inline_media_audio
+    media_type: audio
+    description: "Download a song or audio track — type a song name, artist, or paste a Spotify/YouTube/SoundCloud/Apple Music link"
     # handles: [myinlinebot]   # omit to respond on all bots
     match:
-      - pattern: "https?://(open\\.spotify\\.com|music\\.apple\\.com|youtube\\.com|youtu\\.be|soundcloud\\.com)"
+      - pattern: "https?://(open\\.spotify\\.com|music\\.apple\\.com|soundcloud\\.com)"
         type: url
         priority: 0
     timeout_sec: 25
-    cache:
-      backend: memory
-      ttl_sec: 3600
+    # Resolved from env at runtime; falls back to user DM if unset.
+    staging_chat_env: TELEGRAM_HOME_CHANNEL
+    enabled: true
+
+  - id: media_video
+    type: direct
+    executor: inline_media_video
+    media_type: video
+    description: "Download a video — type a video title, topic, or paste a YouTube or other video URL"
+    # handles: [myinlinebot]   # omit to respond on all bots
+    match:
+      - pattern: "https?://(youtube\\.com|youtu\\.be)"
+        type: url
+        priority: 0
+    timeout_sec: 45
     # Resolved from env at runtime; falls back to user DM if unset.
     staging_chat_env: TELEGRAM_HOME_CHANNEL
     enabled: true
