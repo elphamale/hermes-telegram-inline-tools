@@ -55,6 +55,7 @@ _MODEL_NAME = "BAAI/bge-small-en-v1.5"
 class _Classifier:
     def __init__(self) -> None:
         self._tools: List[Dict[str, Any]] = []
+        self._non_prefix_tools: List[Dict[str, Any]] = []
         self._mtime: float = 0.0
         self._embeddings: Dict[str, Any] = {}  # tool_id -> np.ndarray
         self._model: Optional[Any] = None
@@ -81,9 +82,12 @@ class _Classifier:
             with open(_REGISTRY_PATH) as fh:
                 data = yaml.safe_load(fh) or {}
             self._tools = [t for t in data.get("tools", []) if t.get("enabled", False)]
+            # Tools without a prefix: field are eligible for embedding-based routing.
+            self._non_prefix_tools = [t for t in self._tools if not t.get("prefix")]
         except Exception as exc:
             logger.warning("[inline_classifier] YAML load failed: %s", exc)
             self._tools = []
+            self._non_prefix_tools = []
 
     def _build_embeddings(self) -> None:
         if not self._model_ok or self._model is None:
@@ -131,20 +135,24 @@ class _Classifier:
         return matched
 
     def _embedding_tools(self, query: str) -> List[Dict[str, Any]]:
-        """Return tools above similarity threshold, ordered by score desc."""
+        """Return non-prefix tools above similarity threshold, ordered by score desc.
+
+        Prefix-keyed tools are never candidates here — they only match via _prefix_tools.
+        """
+        candidates = self._non_prefix_tools
         if not self._model_ok or self._model is None or not self._embeddings:
-            return self._tools  # fail-open: dispatch all non-prefix tools
+            return candidates  # fail-open: all non-prefix tools
         try:
             import numpy as np
             vecs = list(self._model.embed([query]))
             if not vecs:
-                return self._tools
+                return candidates
             qv = np.array(vecs[0], dtype=float)
             norm = np.linalg.norm(qv)
             if norm > 0:
                 qv = qv / norm
             scored = []
-            for tool in self._tools:
+            for tool in candidates:
                 tid = tool.get("id", "")
                 if tid not in self._embeddings:
                     continue
@@ -152,12 +160,12 @@ class _Classifier:
                 if score >= SIMILARITY_THRESHOLD:
                     scored.append((score, tool))
             if not scored:
-                return self._tools  # fail-open
+                return candidates  # fail-open: no strong match
             scored.sort(key=lambda x: x[0], reverse=True)
             return [t for _, t in scored]
         except Exception as exc:
             logger.warning("[inline_classifier] embedding inference failed: %s", exc)
-            return self._tools  # fail-open
+            return candidates  # fail-open
 
     def select_tools(self, query: str, bot_username: Optional[str]) -> List[Dict[str, Any]]:
         """Return candidate tools for this query, filtered by bot_username."""
@@ -198,7 +206,7 @@ async def _classifier_dispatch(router_self: Any, user_id: int, query: str) -> Li
         candidates = _classifier.select_tools(query, getattr(router_self, "bot_username", None))
     except Exception as exc:
         logger.warning("[inline_classifier] select_tools error: %s", exc)
-        candidates = _classifier._tools  # fail-open
+        candidates = _classifier._non_prefix_tools or _classifier._tools  # fail-open
 
     if not candidates:
         # Fall back to the registry's own matcher
