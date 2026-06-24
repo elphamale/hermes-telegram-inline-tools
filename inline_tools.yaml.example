@@ -23,7 +23,7 @@ tools:
   - id: media_download
     type: direct
     executor: inline_media
-    description: "Download audio from Spotify, YouTube, SoundCloud, or Apple Music URLs"
+    description: "Download audio from Spotify, YouTube, SoundCloud or Apple Music — paste a link or search by song name"
     # handles: [myinlinebot]   # omit to respond on all bots
     match:
       - pattern: "https?://(open\\.spotify\\.com|music\\.apple\\.com|youtube\\.com|youtu\\.be|soundcloud\\.com)"
