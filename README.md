@@ -38,7 +38,7 @@ Search the agent's outbound message history and send a past response into any ch
 
 **Auth:** enforces `TELEGRAM_ALLOWED_USERS` independently (the adapter-level inline handler has no allowlist gate — see Security note).
 
-**Requires:** hermes-agent with the pluggable inline executor API (`InlineExecutor` ABC + `register_executor()`).
+**Requires:** hermes-agent with the pluggable inline executor API (PR #50884 or later — `InlineExecutor` ABC + `register_executor()`).
 
 ## Classifier
 
