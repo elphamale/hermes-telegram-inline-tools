@@ -25,7 +25,13 @@ only dispatched when ``router.bot_username`` matches one of the listed names.
 The adapter sets ``router.bot_username`` after ``app.initialize()``.
 
 Install:
-  Place this file in ~/.hermes/plugins/inline_classifier.py
+  mkdir -p ~/.hermes/plugins/inline-classifier
+  cp inline_classifier.py ~/.hermes/plugins/inline-classifier/__init__.py
+  Create ~/.hermes/plugins/inline-classifier/plugin.yaml:
+    name: inline-classifier
+    kind: standalone
+    version: "1.0.0"
+  hermes plugins enable inline-classifier
   Restart the gateway.
 """
 

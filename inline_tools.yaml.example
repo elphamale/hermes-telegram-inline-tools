@@ -1,6 +1,6 @@
 # Inline tools registry — ONLY tools listed and enabled here are dispatchable via inline query.
 # type: direct  → executor called without LLM
-# type: llm     → routes through Manifest (disabled tools below show the future interface)
+# type: llm     → routes through an LLM executor (disabled tools below show the future interface)
 #
 # New fields (v2):
 #   description:  Plain English summary used by the classifier for embedding-based routing.
@@ -13,10 +13,6 @@
 # Routing precedence (lowest priority number wins):
 #   prefix tools and URL tools both default to priority 0.
 #   Stable sort preserves YAML order for equal-priority tools.
-#
-# #закон routing note: the ^# pattern correctly matches Cyrillic queries like #закон.
-# Past failures were at the executor level (FTS5 trigram tokenizer returning no rows
-# for short Cyrillic terms), not in the routing layer. The match block is correct as-is.
 version: 1
 
 tools:
@@ -40,7 +36,7 @@ tools:
   - id: repost
     type: direct
     executor: inline_repost
-    description: "Search past Aineko messages by keyword and send the result to the current chat"
+    description: "Search the agent's past messages by keyword and send the result to the current chat"
     # handles: [myinlinebot]   # omit to respond on all bots
     prefix: "#"
     match:

@@ -1,4 +1,4 @@
-"""Inline executor: search and repost Aineko's outbound messages.
+"""Inline executor: search and repost the agent's outbound messages.
 
 Registered as ``inline_repost`` — matches the executor name in inline_tools.yaml.
 Searches the Hermes state DB's ``messages_fts_trigram`` table for assistant
@@ -133,7 +133,7 @@ def _search_messages(
 
 
 class InlineRepostExecutor(InlineExecutor):
-    """Search Aineko's outbound messages and return the best match for repost."""
+    """Search the agent's outbound messages and return the best match for repost."""
 
     DEFAULT_SESSION_WINDOW = 5
 

@@ -1,6 +1,6 @@
 # hermes-telegram-inline-tools
 
-Custom executors for the [Hermes agent](https://github.com/NousResearch/hermes-agent) Telegram inline query surface.
+Custom executors for the Hermes agent Telegram inline query surface.
 
 Type `@botname <query>` in any Telegram chat to trigger inline tools without the bot being a member of the group.
 
@@ -26,7 +26,7 @@ Search the agent's outbound message history and send a past response into any ch
 
 **Trigger:** `@botname #<search term>`
 
-**Example:** `@botname #perimeter report` → finds the most recent message containing "perimeter report" and offers it as an inline result to tap and send.
+**Example:** `@botname #release notes` → finds the most recent message containing "release notes" and offers it as an inline result to tap and send.
 
 **Scope:** searches the 5 most recent sessions by default. Configurable via `session_window` in `inline_tools.yaml`:
 
@@ -38,7 +38,7 @@ Search the agent's outbound message history and send a past response into any ch
 
 **Auth:** enforces `TELEGRAM_ALLOWED_USERS` independently (the adapter-level inline handler has no allowlist gate — see Security note).
 
-**Requires:** hermes-agent with the pluggable inline executor API (PR [#50884](https://github.com/NousResearch/hermes-agent/pull/50884) or later).
+**Requires:** hermes-agent with the pluggable inline executor API (`InlineExecutor` ABC + `register_executor()`).
 
 ## Classifier
 
